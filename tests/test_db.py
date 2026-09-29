@@ -202,9 +202,9 @@ async def main() -> int:
     data_dir.mkdir(exist_ok=True)
 
     server = pgserver.get_server(data_dir)
-    # pgserver listens on a unix socket; asyncpg connects over that directly.
-    dsn = f"postgresql://postgres@/postgres?host={data_dir}"
-    print(f"dsn host (socket dir): {data_dir}")
+    # get_uri() is the portable DSN: a unix socket on POSIX, TCP on Windows.
+    dsn = server.get_uri()
+    print(f"dsn: {dsn}")
 
     failures = await run(dsn)
 

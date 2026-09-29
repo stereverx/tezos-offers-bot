@@ -15,6 +15,7 @@ import os
 import pathlib
 import shutil
 import sys
+import tempfile
 
 import httpx
 import pgserver
@@ -39,12 +40,11 @@ def check(label, condition, detail=""):
 async def main() -> int:
     failures = 0
 
-    data_dir = pathlib.Path("/tmp/pgdata_startup_test")
+    data_dir = pathlib.Path(tempfile.gettempdir()) / "pgdata_startup_test"
     if data_dir.exists():
         shutil.rmtree(data_dir, ignore_errors=True)
     data_dir.mkdir(exist_ok=True)
-    pgserver.get_server(data_dir)
-    dsn = f"postgresql://postgres@/postgres?host={data_dir}"
+    dsn = pgserver.get_server(data_dir).get_uri()
 
     print("\n== Database.connect + init_schema ==")
     db = await Database.connect(dsn)
@@ -96,6 +96,33 @@ async def main() -> int:
             f"missing {missing}" if missing else f"{len(cmds)} commands",
         )
         failures += check("text message handler registered", total >= 8, f"{total} handlers")
+
+        # Regression: the scanner task used to be created with a
+        # create_task(update_interval=...) kwarg that PTB v21 does not accept,
+        # so the bot died on every real boot. Building the app never caught it.
+        # Parse the real call site in main.py so a bad kwarg fails here.
+        import ast
+        import inspect as _inspect
+
+        from telegram.ext import Application as _Application
+
+        accepted = set(_inspect.signature(_Application.create_task).parameters)
+        main_py = pathlib.Path(__file__).resolve().parent.parent / "bot" / "main.py"
+        tree = ast.parse(main_py.read_text(encoding="utf-8"))
+        bad = [
+            f"line {n.lineno}: {kw.arg}"
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "create_task"
+            for kw in n.keywords
+            if kw.arg and kw.arg not in accepted
+        ]
+        failures += check(
+            "create_task kwargs in main.py are valid",
+            not bad,
+            "; ".join(bad) if bad else f"accepted={sorted(accepted)}",
+        )
 
         await app.shutdown()
         print("  (application shut down cleanly)")

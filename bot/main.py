@@ -293,6 +293,9 @@ async def run() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx logs full request URLs, and every Telegram API URL carries the bot
+    # token. Keep its INFO chatter out of the logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     config = load_config()
 
     db = await Database.connect(config.database_url)
@@ -317,16 +320,15 @@ async def run() -> None:
             if scan.new_offers:
                 await notify_new_offers(scan, bot, prices)
 
-        # Run the poller alongside the bot's own update loop.
-        app.create_task(
-            scanner.run_forever(config.scan_interval, on_scanned),
-            update_interval=0.1,
-        )
-
         try:
             await app.initialize()
             await app.start()
             await app.updater.start_polling(drop_pending_updates=True)
+            # Created after start() so PTB tracks and cancels it on shutdown.
+            # The scanner sleeps before its first pass, so nothing is missed.
+            app.create_task(
+                scanner.run_forever(config.scan_interval, on_scanned),
+            )
             log.info("bot is running")
             await asyncio.Event().wait()
         finally:
