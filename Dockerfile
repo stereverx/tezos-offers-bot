@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.12-slim
+# Multi-arch: the target may be arm64 (Oracle's free A1 shape is Ampere) or
+# amd64 (GCP e2-micro, AWS Lightsail). Buildx picks the right base image for
+# whichever platform the build is running on.
+FROM --platform=$TARGETPLATFORM python:3.12-slim
 
 # Keep the image small and avoid writing bytecode into the layer.
 ENV PYTHONUNBUFFERED=1 \
