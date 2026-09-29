@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: tezos_offers
+    command: postgres -c shared_buffers=64MB -c work_mem=4MB -c maintenance_work_mem=32MB -c max_connections=20 -c effective_cache_size=256MB
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tezos_offers"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    expose:
+      - "5432"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/tezos_offers
+      SCAN_INTERVAL: ${SCAN_INTERVAL:-300}
+      OBJKT_RATE_LIMIT_RPM: ${OBJKT_RATE_LIMIT_RPM:-100}
+      DEBUG: ${DEBUG:-false}
+
+volumes:
+  pgdata:

@@ -70,6 +70,8 @@ def load_config() -> Config:
             "TELEGRAM_BOT_TOKEN is not set. Copy .env.example to .env and fill it in."
         )
 
+    # Under Docker Compose, DATABASE_URL points at the `db` service. The local
+    # default keeps `python -m bot.main` usable without compose.
     return Config(
         telegram_bot_token=token,
         database_url=os.getenv(

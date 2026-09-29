@@ -28,7 +28,7 @@ Message [@BotFather](https://t.me/BotFather) and use `/newbot`.
 Use a **new** token. If another app already uses your existing token, both
 apps will poll `getUpdates` on it and steal each other's updates.
 
-### 2. Install
+### 2. Install (local development)
 
 ```bash
 uv venv --python 3.12
@@ -36,20 +36,42 @@ uv pip install -r requirements.txt
 cp .env.example .env
 ```
 
-### 3. Database
+### 3. Deploy to a server
+
+See [Deployment](#deployment) below for the recommended GCP setup.
+
+## Deployment
+
+Target: **GCP `e2-micro`**, which is the only instance type in the Always Free
+tier — 1 GB RAM, 30 GB disk, **free permanently** (no expiry, unlike the AWS
+$100 credit, which lasts 90 days). Available in `us-west1`, `us-central1` and
+`us-east1`.
 
 ```bash
-createdb tezos_offers
+gcloud auth login
+export GCP_PROJECT_ID=your-project-id
+./deploy/gcp-setup.sh
 ```
 
-Then set `DATABASE_URL` in `.env`. Tables are created automatically on first
-run.
-
-### 4. Run
+The script creates the VM, and an SSH firewall rule scoped to **your IP only**
+(the bot has no public ports, so nothing else is exposed). Then on the VM:
 
 ```bash
-.venv/bin/python -m bot.main
+git clone <your-repo> tezos-offers-bot && cd tezos-offers-bot
+cp .env.example .env     # set TELEGRAM_BOT_TOKEN and POSTGRES_PASSWORD
+docker compose up -d --build
+docker compose logs -f bot
 ```
+
+`docker-compose.yml` runs Postgres alongside the bot, tuned for 1 GB of RAM
+(`shared_buffers=64MB`, `max_connections=20`). The bot needs no published
+port: it only makes outbound calls.
+
+**Cost traps to avoid on a small VM:**
+
+- Do **not** create a Cloud NAT Gateway — roughly $32/mo, which would wipe out
+  the free tier. An instance with an external IP reaches the internet directly.
+- Do not use AWS NAT Gateway for the same reason ($32.85/mo, no free tier).
 
 ## Commands
 
@@ -94,22 +116,26 @@ offer alerts exactly once. Offers that disappear from the indexer are marked
 ## Tests
 
 ```bash
-.venv/bin/python tests/test_pipeline.py
+.venv/bin/python tests/test_pipeline.py   # live mainnet scan, needs network
+.venv/bin/python tests/test_db.py         # real PostgreSQL: schema, dedupe, expiry
+.venv/bin/python tests/test_startup.py    # DB connect + Application wiring
 ```
 
-Runs unit checks plus a full live scan against mainnet using a wallet that
-holds NFTs, and asserts dedupe behaviour across two consecutive scans.
-Requires network access.
+`test_pipeline.py` runs a full live scan against a wallet that holds NFTs and
+asserts dedupe behaviour across two consecutive scans. `test_db.py` and
+`test_startup.py` spin up an embedded PostgreSQL via `pgserver`, so they need
+no external database. All three require network access except where noted.
 
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | — | Required |
-| `DATABASE_URL` | local postgres | PostgreSQL DSN |
+| `POSTGRES_PASSWORD` | — | Required under Docker Compose |
 | `SCAN_INTERVAL` | `300` | Seconds between scans |
 | `OBJKT_RATE_LIMIT_RPM` | `100` | Client-side throttle (objkt allows 120) |
 | `DEBUG` | `false` | Verbose logging |
+| `DATABASE_URL` | set by compose | Only for running outside Docker |
 
 ## Not implemented
 
