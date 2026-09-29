@@ -42,23 +42,31 @@ See [Deployment](#deployment) below for the recommended GCP setup.
 
 ## Deployment
 
-Target: **GCP `e2-micro`**, which is the only instance type in the Always Free
-tier — 1 GB RAM, 30 GB disk, **free permanently** (no expiry, unlike the AWS
-$100 credit, which lasts 90 days). Available in `us-west1`, `us-central1` and
-`us-east1`.
+Target: **AWS Lightsail**, which is a flat monthly bundle (compute + disk +
+static public IPv4 + 2 TB transfer) and has no VPC, so there is nothing to
+accidentally provision a NAT Gateway into.
 
 ```bash
-gcloud auth login
-export GCP_PROJECT_ID=your-project-id
-./deploy/gcp-setup.sh
+# 1. install the AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+sudo apt-get install -y unzip && unzip awscliv2.zip && sudo ./aws/install
+
+# 2. sign in
+aws configure
+
+# 3. create the instance (resolves the real bundle/blueprint ids for you)
+export AWS_REGION=us-east-1
+./deploy/aws-setup.sh
 ```
 
-The script creates the VM, and an SSH firewall rule scoped to **your IP only**
-(the bot has no public ports, so nothing else is exposed). Then on the VM:
+Then:
 
 ```bash
-git clone <your-repo> tezos-offers-bot && cd tezos-offers-bot
-cp .env.example .env     # set TELEGRAM_BOT_TOKEN and POSTGRES_PASSWORD
+./deploy/deploy.sh ubuntu@THE_IP     # from this machine
+ssh ubuntu@THE_IP
+./deploy/vm-setup.sh                 # installs Docker on the VM
+cd ~/tezos-offers-bot
+cp .env.example .env                 # set TELEGRAM_BOT_TOKEN and POSTGRES_PASSWORD
 docker compose up -d --build
 docker compose logs -f bot
 ```
@@ -67,11 +75,26 @@ docker compose logs -f bot
 (`shared_buffers=64MB`, `max_connections=20`). The bot needs no published
 port: it only makes outbound calls.
 
-**Cost traps to avoid on a small VM:**
+**Cost**
 
-- Do **not** create a Cloud NAT Gateway — roughly $32/mo, which would wipe out
-  the free tier. An instance with an external IP reaches the internet directly.
-- Do not use AWS NAT Gateway for the same reason ($32.85/mo, no free tier).
+| Item | Cost |
+|---|---|
+| `micro_3_0` bundle (1 GB, 40 GB disk, 2 TB transfer) | $7/mo |
+| Over a 6-month credit window | ~$42 of the $100 credit |
+
+Set `RAM_GB=2.0` for a `small_3_0` bundle ($12/mo) if you want more headroom.
+`nano_3_0` ($5) has 0.5 GB RAM, which is too tight to run Postgres alongside
+the bot.
+
+**Cost traps to avoid**
+
+- Do **not** create a NAT Gateway. It is ~$32.85/mo with no free tier and
+  would exhaust the credit in about three weeks. Lightsail has no VPC, so
+  nothing tempts you into it.
+- On EC2, a public IPv4 costs $0.005/hr (~$3.65/mo) on top of the instance.
+  Lightsail bundles it.
+- Set a billing alarm in the AWS console so you hear about charges before
+  they accumulate.
 
 ## Commands
 
@@ -125,6 +148,9 @@ offer alerts exactly once. Offers that disappear from the indexer are marked
 asserts dedupe behaviour across two consecutive scans. `test_db.py` and
 `test_startup.py` spin up an embedded PostgreSQL via `pgserver`, so they need
 no external database. All three require network access except where noted.
+
+`deploy/gcp-setup.sh` is kept for anyone who prefers GCP's always-free
+`e2-micro`; the AWS path in `deploy/aws-setup.sh` is the primary target.
 
 ## Configuration
 
