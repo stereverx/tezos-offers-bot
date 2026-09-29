@@ -42,28 +42,33 @@ See [Deployment](#deployment) below for the recommended GCP setup.
 
 ## Deployment
 
-Target: **AWS Lightsail**, which is a flat monthly bundle (compute + disk +
-static public IPv4 + 2 TB transfer) and has no VPC, so there is nothing to
-accidentally provision a NAT Gateway into.
+Target: **GCP `e2-micro`** — the only instance type in the Always Free tier,
+1 GB RAM and 30 GB disk, **free permanently** (not free for 6 months like the
+AWS credit). Available in `us-west1`, `us-central1` and `us-east1`.
 
 ```bash
-# 1. install the AWS CLI
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
-sudo apt-get install -y unzip && unzip awscliv2.zip && sudo ./aws/install
+# 1. install the Google Cloud CLI
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+  | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+sudo apt-get update && sudo apt-get install -y google-cloud-cli
 
-# 2. sign in
-aws configure
+# 2. sign in (opens a browser)
+gcloud auth login
 
-# 3. create the instance (resolves the real bundle/blueprint ids for you)
-export AWS_REGION=us-east-1
-./deploy/aws-setup.sh
+# 3. create the VM
+export GCP_PROJECT_ID=<your-project-id>
+./deploy/gcp-setup.sh
 ```
 
-Then:
+The script enables the Compute API, creates an SSH firewall rule scoped to
+**your IP only**, and launches the e2-micro. It prints the IP when done.
+Re-running is safe: an existing VM is reused rather than duplicated.
+
+Then deploy:
 
 ```bash
-./deploy/deploy.sh ubuntu@THE_IP     # from this machine
-ssh ubuntu@THE_IP
+./deploy/deploy.sh <user>@THE_IP     # from this machine
+ssh <user>@THE_IP
 ./deploy/vm-setup.sh                 # installs Docker on the VM
 cd ~/tezos-offers-bot
 cp .env.example .env                 # set TELEGRAM_BOT_TOKEN and POSTGRES_PASSWORD
@@ -75,26 +80,23 @@ docker compose logs -f bot
 (`shared_buffers=64MB`, `max_connections=20`). The bot needs no published
 port: it only makes outbound calls.
 
-**Cost**
+**Cost: $0/month, indefinitely.** e2-micro is free in the Always Free tier.
+Two things to avoid:
 
-| Item | Cost |
-|---|---|
-| `micro_3_0` bundle (1 GB, 40 GB disk, 2 TB transfer) | $7/mo |
-| Over a 6-month credit window | ~$42 of the $100 credit |
+- Do **not** create a Cloud NAT Gateway — roughly $32/mo, which would turn a
+  free instance into a paid one. The VM's own external IP handles outbound
+  traffic, so nothing is needed.
+- The bot sends images over Telegram, so it consumes a small amount of egress.
+  The free tier allows 1 GB/month from North America, which is ample here.
 
-Set `RAM_GB=2.0` for a `small_3_0` bundle ($12/mo) if you want more headroom.
-`nano_3_0` ($5) has 0.5 GB RAM, which is too tight to run Postgres alongside
-the bot.
+### Alternative: AWS Lightsail
 
-**Cost traps to avoid**
-
-- Do **not** create a NAT Gateway. It is ~$32.85/mo with no free tier and
-  would exhaust the credit in about three weeks. Lightsail has no VPC, so
-  nothing tempts you into it.
-- On EC2, a public IPv4 costs $0.005/hr (~$3.65/mo) on top of the instance.
-  Lightsail bundles it.
-- Set a billing alarm in the AWS console so you hear about charges before
-  they accumulate.
+If you would rather use the $100 AWS credit, `deploy/aws-setup.sh` creates a
+Lightsail instance. `micro_3_0` is $7/mo (1 GB, 40 GB disk, 2 TB transfer),
+so roughly $42 over six months. Lightsail is a flat bundle with a static IPv4
+included and no VPC, which avoids the ~$32.85/mo NAT Gateway trap. The AWS
+free tier no longer includes free compute hours, so this is credit-funded
+rather than free.
 
 ## Commands
 
