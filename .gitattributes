@@ -1,0 +1,7 @@
+# Keep shell scripts and Docker files LF in the working tree, even on Windows.
+# core.autocrlf rewrites them to CRLF on checkout, and deploy.sh tars the
+# working tree to the VM, where "set -euo pipefail" then dies on
+# "invalid option name" for the stray CR.
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf

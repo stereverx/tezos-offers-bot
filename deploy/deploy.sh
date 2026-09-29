@@ -36,6 +36,14 @@ if command -v rsync >/dev/null 2>&1; then
     "$PROJECT_DIR/" "$TARGET:~$REMOTE_DIR/"
 else
   echo "rsync not found locally; falling back to tar over ssh"
+  # Normalise CRLF before shipping. A Windows checkout (core.autocrlf) turns
+  # the .sh files CRLF, and the VM then fails on "set -euo pipefail: invalid
+  # option name". .gitattributes stops new checkouts, this catches the rest.
+  find "$PROJECT_DIR" \
+    -name '*.sh' -o -name 'Dockerfile' -o -name 'docker-compose.yml' |
+  while read -r f; do
+    tr -d '\r' < "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  done
   tar -czf - \
     --exclude=.venv --exclude=.git --exclude=.env \
     --exclude=__pycache__ --exclude='*.pyc' --exclude='*.log' \
