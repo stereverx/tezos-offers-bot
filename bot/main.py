@@ -25,7 +25,7 @@ from bot.scanner import NEW_OFFER_BATCH_LIMIT, Scanner, WalletScan
 from bot.sources.objkt import ObjktClient
 from bot.sources.teia import TeiaClient
 from bot.sources.tzkt import TzktPriceClient
-from bot.utils import is_valid_tezos_address
+from bot.utils import format_xtz, is_valid_tezos_address
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ WELCOME = (
     "/untrack tz1… — stop tracking\n"
     "/wallet — your tracked wallets\n"
     "/offers — current active offers\n"
+    "/min 5 — only message me for offers of 5 XTZ or more\n"
     "/scan — force a scan now\n"
     "/help — this message"
 )
@@ -201,6 +202,64 @@ async def offers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+async def min_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set or show the minimum offer value that triggers an alert.
+
+    Offers below the threshold are still recorded and still show up in /offers;
+    they just do not send a message. That keeps the threshold a notification
+    preference rather than a change to what the bot tracks.
+    """
+    db: Database = context.application.bot_data["db"]
+    telegram_id = update.effective_user.id
+
+    if not context.args:
+        mutez = await db.get_min_alert_mutez(telegram_id)
+        current = "every offer" if not mutez else f"{format_xtz(mutez)} XTZ"
+        await update.message.reply_text(
+            f"🔔 I'll message you for offers of <b>{escape(current)}</b> or more.\n\n"
+            "Change it with <code>/min 5</code> (in XTZ), or "
+            "<code>/min 0</code> to hear about everything.\n"
+            "Offers below the threshold are still saved — see them with /offers.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    raw = context.args[0].strip().lower()
+    if raw in {"off", "none", "all"}:
+        mutez = 0
+    else:
+        try:
+            value = float(raw)
+        except ValueError:
+            await update.message.reply_text(
+                "🤔 That doesn't look like a number.\n"
+                "Try <code>/min 5</code> for 5 XTZ, or <code>/min 0</code> "
+                "to be told about every offer.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if value < 0 or value != value or value == float("inf"):
+            await update.message.reply_text(
+                "🤔 Please use a positive number of XTZ, e.g. <code>/min 2.5</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        mutez = int(round(value * 1_000_000))
+
+    await db.set_min_alert_mutez(telegram_id, mutez)
+    if mutez:
+        await update.message.reply_text(
+            f"✅ I'll only message you for offers of <b>{format_xtz(mutez)} XTZ</b> "
+            "or more. Everything below that is still saved and visible in /offers.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.message.reply_text(
+            "✅ I'll message you about <b>every</b> new offer, however small.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     scanner: Scanner = context.application.bot_data["scanner"]
     db: Database = context.application.bot_data["db"]
@@ -208,15 +267,28 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     status = await update.message.reply_text("🔄 Scanning your wallets…")
     rows = await db.list_wallets(telegram_id)
+    min_mutez = await db.get_min_alert_mutez(telegram_id)
 
     total_new = 0
+    total_below = 0
     for row in rows:
         result = await scanner.scan_wallet(telegram_id, row["address"])
-        total_new += len(result.new_offers)
+        for offer in result.new_offers:
+            if offer.price_mutez >= min_mutez:
+                total_new += 1
+            else:
+                total_below += 1
 
     if total_new:
+        text = f"✅ Found <b>{total_new}</b> new offer(s)."
+        if total_below:
+            text += f"\n🤫 {total_below} below your /min threshold, not sent."
+        await status.edit_text(text, parse_mode=ParseMode.HTML)
+    elif total_below:
         await status.edit_text(
-            f"✅ Found <b>{total_new}</b> new offer(s).", parse_mode=ParseMode.HTML
+            f"🤫 Found <b>{total_below}</b> new offer(s), all below your /min "
+            f"threshold of {format_xtz(min_mutez)} XTZ.",
+            parse_mode=ParseMode.HTML,
         )
     else:
         await status.edit_text("✅ Scan complete. No new offers.")
@@ -236,14 +308,25 @@ async def on_alert_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
 
-async def notify_new_offers(scan: WalletScan, bot, prices: TzktPriceClient) -> None:
-    """Send alerts for a finished wallet scan."""
+async def notify_new_offers(
+    scan: WalletScan, bot, prices: TzktPriceClient, min_mutez: int = 0
+) -> None:
+    """Send alerts for a finished wallet scan.
+
+    Offers under `min_mutez` are dropped here, at notify time, so they are
+    still stored and still counted by /offers. Every alert path goes through
+    this function, so one guard covers the poller and /scan.
+    """
     if not scan.new_offers:
+        return
+
+    new_offers = [o for o in scan.new_offers if o.price_mutez >= min_mutez]
+    if not new_offers:
         return
 
     usd_rate = await prices.xtz_to_usd()
 
-    for offer in scan.new_offers[:NEW_OFFER_BATCH_LIMIT]:
+    for offer in new_offers[:NEW_OFFER_BATCH_LIMIT]:
         payload = alerts.build_alert(offer, usd_rate)
         with suppress(Exception):
             if "photo" in payload:
@@ -251,7 +334,7 @@ async def notify_new_offers(scan: WalletScan, bot, prices: TzktPriceClient) -> N
             else:
                 await bot.send_message(**payload)
 
-    remaining = len(scan.new_offers) - NEW_OFFER_BATCH_LIMIT
+    remaining = len(new_offers) - NEW_OFFER_BATCH_LIMIT
     if remaining > 0:
         with suppress(Exception):
             await bot.send_message(
@@ -280,6 +363,7 @@ def build_application(
     app.add_handler(CommandHandler("untrack", untrack_cmd))
     app.add_handler(CommandHandler("wallet", wallet_cmd))
     app.add_handler(CommandHandler("offers", offers_cmd))
+    app.add_handler(CommandHandler("min", min_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(on_alert_click))
@@ -318,7 +402,8 @@ async def run() -> None:
                 log.warning("scan error for %s: %s", scan.address, scan.error)
                 return
             if scan.new_offers:
-                await notify_new_offers(scan, bot, prices)
+                min_mutez = await db.get_min_alert_mutez(scan.telegram_id)
+                await notify_new_offers(scan, bot, prices, min_mutez)
 
         try:
             await app.initialize()
@@ -327,7 +412,9 @@ async def run() -> None:
             # Created after start() so PTB tracks and cancels it on shutdown.
             # The scanner sleeps before its first pass, so nothing is missed.
             app.create_task(
-                scanner.run_forever(config.scan_interval, on_scanned),
+                scanner.run_forever(
+                    config.scan_interval, on_scanned, config.teia_scan_interval
+                ),
             )
             log.info("bot is running")
             await asyncio.Event().wait()

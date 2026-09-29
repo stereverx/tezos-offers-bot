@@ -59,6 +59,7 @@ class Config:
     telegram_bot_token: str
     database_url: str
     scan_interval: int
+    teia_scan_interval: int
     objkt_rate_limit_rpm: int
     debug: bool
 
@@ -78,6 +79,9 @@ def load_config() -> Config:
             "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/tezos_offers"
         ),
         scan_interval=_int_env("SCAN_INTERVAL", 300),
+        # Teia needs one query per held token, so it costs far more than the
+        # objkt pass. Poll it on its own, slower cadence.
+        teia_scan_interval=_int_env("TEIA_SCAN_INTERVAL", 600),
         objkt_rate_limit_rpm=_int_env("OBJKT_RATE_LIMIT_RPM", 100),
         debug=os.getenv("DEBUG", "false").lower() == "true",
     )

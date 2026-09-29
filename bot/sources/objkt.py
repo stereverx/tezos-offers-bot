@@ -31,6 +31,16 @@ _OFFERS_PAGE = 100
 # Guardrail for wallets holding more NFTs than one batch allows.
 _MAX_TOKEN_PKS = 500
 
+# objkt's own marketplace group -> the label we show and expire under.
+GROUP_LABELS = {
+    "objktcom": "objkt",
+    "fxhash": "fxhash",
+    "hen": "hic et nunc",
+    "hic et nunc": "hic et nunc",
+    "akaswap": "akaSwap",
+    "dogami": "dogami",
+}
+
 
 class ObjktClient:
     def __init__(self, client: httpx.AsyncClient, rate_limit_rpm: int = 100) -> None:
@@ -154,6 +164,7 @@ class ObjktClient:
             marketplace_contract
             level
             ophash
+            marketplace { name group }
             token {
               name
               token_id
@@ -189,8 +200,13 @@ class ObjktClient:
 
         from bot.config import MARKETPLACE_LABELS
 
-        marketplace = MARKETPLACE_LABELS.get(
-            row.get("marketplace_contract") or "", "unknown"
+        # Prefer objkt's own marketplace group: the hardcoded contract map goes
+        # stale, and an unmapped contract used to become "unknown", which then
+        # silently fell out of the per-marketplace expiry scope.
+        group = ((row.get("marketplace") or {}).get("group") or "").strip().lower()
+        marketplace = (
+            MARKETPLACE_LABELS.get(row.get("marketplace_contract") or "")
+            or (GROUP_LABELS.get(group) or group or "unknown")
         )
 
         return Offer(

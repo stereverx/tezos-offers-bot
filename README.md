@@ -42,6 +42,24 @@ See [Deployment](#deployment) below for the recommended GCP setup.
 
 ## Deployment
 
+**It runs on Google Cloud at $0/month, indefinitely.** This is not a theory:
+the bot is deployed and running on a GCP `e2-micro` in the Always Free tier,
+tracking a 3,102-NFT wallet. Everything below is the setup that was actually
+used, not a hypothetical.
+
+### Why it is free
+
+| Resource | Cost | Note |
+|---|---|---|
+| `e2-micro` VM | **$0** | The only Always Free instance type. 1 GB RAM, 30 GB disk. One per project, free forever |
+| Compute Engine API | $0 | Enabling an API does not bill |
+| Egress | $0 | 1 GB/month free from North America; image previews use a fraction of that |
+| Cloud NAT Gateway | **~$32/mo** | **Do not create one.** Not needed — the VM's external IP handles all outbound traffic |
+| Static IP | $0 | In-use addresses are free; only *reserved* addresses cost |
+
+Billing must be enabled on the project, and the VM must be in `us-west1`,
+`us-central1` or `us-east1` to qualify.
+
 Target: **GCP `e2-micro`** — the only instance type in the Always Free tier,
 1 GB RAM and 30 GB disk, **free permanently** (not free for 6 months like the
 AWS credit). Available in `us-west1`, `us-central1` and `us-east1`.
@@ -63,6 +81,17 @@ export GCP_PROJECT_ID=<your-project-id>
 The script enables the Compute API, creates an SSH firewall rule scoped to
 **your IP only**, and launches the e2-micro. It prints the IP when done.
 Re-running is safe: an existing VM is reused rather than duplicated.
+
+If the project is not yet linked to a billing account, link it first:
+
+```bash
+gcloud billing projects link <your-project-id> --billing-account=<billing-id>
+```
+
+```bash
+gcloud compute instances list --project=<your-project-id>
+gcloud compute routers list --project=<your-project-id>   # should be empty
+```
 
 Then deploy:
 
@@ -89,6 +118,15 @@ Two things to avoid:
 - The bot sends images over Telegram, so it consumes a small amount of egress.
   The free tier allows 1 GB/month from North America, which is ample here.
 
+> **Run exactly one instance per bot token.** Two processes polling the same
+> token with `getUpdates` terminate each other, and Telegram reports
+> `Conflict: terminated by other getUpdates request`. If you run the bot
+> locally while it is deployed, stop the local copy first.
+
+> **Only one bot instance may be running at a time**, and a wallet with
+> thousands of NFTs is expensive to scan — see
+> [Scan cost](#scan-cost) before dropping the interval to 60 seconds.
+
 ### Alternative: AWS Lightsail
 
 If you would rather use the $100 AWS credit, `deploy/aws-setup.sh` creates a
@@ -107,6 +145,7 @@ rather than free.
 | `/untrack tz1…` | Stop watching a wallet |
 | `/wallet` | Your tracked wallets and NFT counts |
 | `/offers` | All active offers, highest first, with a total |
+| `/min 5` | Only alert me for offers of 5 XTZ or more (`/min` to show, `/min 0` for all) |
 | `/scan` | Force an immediate scan |
 
 ## How it works
@@ -125,6 +164,48 @@ every SCAN_INTERVAL seconds (default 300):
 Offers are deduplicated on `(telegram_id, marketplace, offer_id)`, so each
 offer alerts exactly once. Offers that disappear from the indexer are marked
 `expired` rather than deleted, keeping history intact.
+
+### Alert threshold
+
+`/min 5` sets the smallest offer you want to hear about, in XTZ. It is a
+notification preference, not a tracking change:
+
+```bash
+/min        # show the current threshold
+/min 2.5    # only alert for offers of 2.5 XTZ or more
+/min 0      # back to alerting on everything (the default)
+```
+
+An offer exactly at the threshold alerts. Offers below it are still stored and
+still counted in `/offers`, and `/scan` reports how many it held back, so
+nothing is hidden — you just stop being pinged for dust bids.
+
+### Scan cost
+
+Teia is polled on its own slower cadence (`TEIA_SCAN_INTERVAL`, default 600s)
+because it costs one query per held token while objkt batches 100 tokens per
+query. That makes a fast `SCAN_INTERVAL` affordable.
+
+Measured on a real 3,102-NFT wallet:
+
+| Stage | Requests | Time |
+|---|---|---|
+| Holdings (`token_holder`, 100/page) | ~31 | 19s |
+| objkt offers (batches of 100) | 5 | 3s |
+| Teia offers (per token) | 3102 | **254s** |
+
+So the objkt-only pass is about **22 seconds**, which makes `SCAN_INTERVAL=60`
+comfortable. Teia at 254s is why it cannot run every cycle — at a 60s interval
+a combined scan would need a 461% duty cycle and would never finish.
+
+objkt does not expose an offer-by-wallet query: `target_address` and
+`seller_address` are `null` on real offers, so the only link from an offer back
+to an owner is `token_pk`, which requires enumerating held tokens.
+
+Teia is not a subset of objkt. On the 3,102-NFT wallet, 93 tokens carried a
+Teia offer and only 8 of those also had an objkt offer, so skipping Teia
+entirely would miss 85 tokens. On the 8 shared tokens Teia was the better bid
+3 times. That is why Teia is slowed down rather than removed.
 
 ### API details worth knowing
 
@@ -151,8 +232,8 @@ asserts dedupe behaviour across two consecutive scans. `test_db.py` and
 `test_startup.py` spin up an embedded PostgreSQL via `pgserver`, so they need
 no external database. All three require network access except where noted.
 
-`deploy/gcp-setup.sh` is kept for anyone who prefers GCP's always-free
-`e2-micro`; the AWS path in `deploy/aws-setup.sh` is the primary target.
+`deploy/gcp-setup.sh` provisions the always-free `e2-micro` and is the primary
+target; `deploy/aws-setup.sh` is available as a paid alternative.
 
 ## Configuration
 
@@ -161,6 +242,7 @@ no external database. All three require network access except where noted.
 | `TELEGRAM_BOT_TOKEN` | — | Required |
 | `POSTGRES_PASSWORD` | — | Required under Docker Compose |
 | `SCAN_INTERVAL` | `300` | Seconds between scans |
+| `TEIA_SCAN_INTERVAL` | `600` | Seconds between Teia passes; see [Scan cost](#scan-cost) |
 | `OBJKT_RATE_LIMIT_RPM` | `100` | Client-side throttle (objkt allows 120) |
 | `DEBUG` | `false` | Verbose logging |
 | `DATABASE_URL` | set by compose | Only for running outside Docker |

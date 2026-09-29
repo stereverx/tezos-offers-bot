@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS offers (
 
 CREATE INDEX IF NOT EXISTS idx_offers_status ON offers (telegram_id, status);
 CREATE INDEX IF NOT EXISTS idx_offers_address ON offers (telegram_id, address, status);
+
+-- Per-user alert threshold. All offers are still stored and shown by /offers;
+-- this only decides which NEW ones are announced.
+CREATE TABLE IF NOT EXISTS settings (
+    telegram_id     BIGINT PRIMARY KEY,
+    min_alert_mutez BIGINT NOT NULL DEFAULT 0,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 
@@ -209,6 +217,25 @@ class Database:
 
         inserted_keys = {(r["marketplace"], r["offer_id"]) for r in inserted}
         return [o for o in offer_list if o.key in inserted_keys]
+
+    async def get_min_alert_mutez(self, telegram_id: int) -> int:
+        """Alert threshold in mutez. 0 means alert on every offer."""
+        return await self._pool.fetchval(
+            "SELECT min_alert_mutez FROM settings WHERE telegram_id = $1",
+            telegram_id,
+        ) or 0
+
+    async def set_min_alert_mutez(self, telegram_id: int, mutez: int) -> None:
+        await self._pool.execute(
+            """
+            INSERT INTO settings (telegram_id, min_alert_mutez, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (telegram_id) DO UPDATE
+                SET min_alert_mutez = EXCLUDED.min_alert_mutez, updated_at = NOW()
+            """,
+            telegram_id,
+            max(0, mutez),
+        )
 
     async def mark_expired(
         self,

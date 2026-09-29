@@ -4,3 +4,6 @@ __pycache__/
 .env
 *.log
 .DS_Store
+
+# Session handoff notes, not project documentation.
+HANDOFF.md
