@@ -28,7 +28,8 @@ log = logging.getLogger(__name__)
 _HOLDINGS_PAGE = 100
 _OFFERS_PAGE = 100
 
-# Guardrail for wallets holding more NFTs than one batch allows.
+# Above this many tokens, log that a scan is using extra requests. Not a cap:
+# every token is always queried.
 _MAX_TOKEN_PKS = 500
 
 # objkt's own marketplace group -> the label we show and expire under.
@@ -146,7 +147,8 @@ class ObjktClient:
     async def get_offers_for_tokens(self, token_pks: list[str]) -> list[Offer]:
         """Active offers across objkt + fxhash + HEN for the given tokens.
 
-        objkt caps _in list length, so tokens are chunked.
+        objkt caps _in list length, so tokens are chunked. Every token is
+        queried: a hard cap here silently drops offers on big wallets.
         """
         if not token_pks:
             return []
@@ -177,7 +179,17 @@ class ObjktClient:
         """
 
         offers: list[Offer] = []
-        unique_pks = list(dict.fromkeys(str(pk) for pk in token_pks))[:_MAX_TOKEN_PKS]
+        unique_pks = list(dict.fromkeys(str(pk) for pk in token_pks))
+
+        if len(unique_pks) > _MAX_TOKEN_PKS:
+            # No silent truncation: a wallet with more NFTs than one request
+            # budget is fine, it just costs more chunks.
+            log.info(
+                "querying %d tokens in %d chunks (over the %d guard)",
+                len(unique_pks),
+                -(-len(unique_pks) // 100),
+                _MAX_TOKEN_PKS,
+            )
 
         for start in range(0, len(unique_pks), 100):
             chunk = unique_pks[start : start + 100]
